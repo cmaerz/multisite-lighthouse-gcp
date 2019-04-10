@@ -53,5 +53,5 @@
       "required": ["bucketName"]
     }
   },
-  "required": ["source", "projectId", "datasetId", "pubsubTopicId", "minTimeBetweenTriggers", "gcs"]
+  "required": ["projectId", "datasetId", "apiKey", "minTimeBetweenTriggers", "gcs"]
 }

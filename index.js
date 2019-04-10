@@ -24,14 +24,15 @@
 const {URL} = require(`url`);
 const fs = require(`fs`);
 const {promisify} = require(`util`);
+const crypto = require('crypto');
 
 const puppeteer = require(`puppeteer`);
 const lighthouse = require(`lighthouse`);
 const uuidv1 = require(`uuid/v1`);
 const {Validator} = require(`jsonschema`);
 
+
 const {BigQuery} = require(`@google-cloud/bigquery`);
-const {PubSub} = require(`@google-cloud/pubsub`);
 const {Storage} = require(`@google-cloud/storage`);
 
 const bqSchema = require(`./bigquery-schema.json`);
@@ -44,9 +45,6 @@ const readFile = promisify(fs.readFile);
 
 // Initialize new GC clients
 const bigquery = new BigQuery({
-  projectId: config.projectId
-});
-const pubsub = new PubSub({
   projectId: config.projectId
 });
 const storage = new Storage({
@@ -203,24 +201,6 @@ function toNdjson(data) {
 }
 
 /**
- * Publishes a message to the Pub/Sub topic for every ID in config.json source object.
- *
- * @param {array<string>} ids Array of ids to publish into Pub/Sub.
- * @returns {Promise<any[]>} Resolved promise when all IDs have been published.
- */
-async function sendAllPubsubMsgs(ids) {
-  return await Promise.all(ids.map(async (id) => {
-    const msg = Buffer.from(id);
-    log(`${id}: Sending init PubSub message`);
-    await pubsub
-      .topic(config.pubsubTopicId)
-      .publisher()
-      .publish(msg);
-    log(`${id}: Init PubSub message sent`)
-  }));
-}
-
-/**
  * Write the lhr log object and reports to GCS. Only write reports if lighthouseFlags.output is defined in config.json.
  *
  * @param {object} obj The lighthouse audit object.
@@ -294,18 +274,13 @@ async function checkEventState(id, timeNow) {
 }
 
 /**
- * The Cloud Function. Triggers on a Pub/Sub trigger, audits the URLs in config.json, writes the result in GCS and loads the data into BigQuery.
+ * The Cloud Function. Triggers on HTTP Request
  *
- * @param {object} event Trigger object.
- * @param {function} callback Callback function (not provided).
  * @returns {Promise<*>} Promise when BigQuery load starts.
+ * @param url
  */
-async function launchLighthouse (event, callback) {
+async function launchLighthouse (url) {
   try {
-
-    const source = config.source;
-    const msg = Buffer.from(event.data, 'base64').toString();
-    const ids = source.map(obj => obj.id);
     const uuid = uuidv1();
     const metadata = {
       sourceFormat: 'NEWLINE_DELIMITED_JSON',
@@ -313,14 +288,7 @@ async function launchLighthouse (event, callback) {
       jobId: uuid
     };
 
-    // If the Pub/Sub message is not valid
-    if (msg !== 'all' && !ids.includes(msg)) { return console.error('No valid message found!'); }
-
-    if (msg === 'all') { return sendAllPubsubMsgs(ids); }
-
-    const [src] = source.filter(obj => obj.id === msg);
-    const id = src.id;
-    const url = src.url;
+    const id = crypto.createHash('md5').update(url).digest('hex');
 
     log(`${id}: Received message to start with URL ${url}`);
 
@@ -371,7 +339,6 @@ if (process.env.NODE_ENV !== 'test') {
   module.exports = {
     _init: init,
     _writeLogAndReportsToStorage: writeLogAndReportsToStorage,
-    _sendAllPubSubMsgs: sendAllPubsubMsgs,
     _toNdJson: toNdjson,
     _createJSON: createJSON,
     _launchBrowserWithLighthouse: launchBrowserWithLighthouse,
@@ -379,4 +346,14 @@ if (process.env.NODE_ENV !== 'test') {
   }
 }
 
-module.exports.launchLighthouse = launchLighthouse;
+module.exports.launchLighthouse = async (req,res) => {
+  if (req.body.apiKey === config.apiKey) {
+    await launchLighthouse(req.body.url);
+    res.send('Done');
+  } else {
+    res.send('Wrong API Key');
+  }
+};
+
+
+
